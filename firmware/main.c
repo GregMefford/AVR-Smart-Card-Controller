@@ -5,6 +5,11 @@
 #include <avr/io.h>
 #include <util/delay.h>
 
+typedef struct {
+  unsigned char data[16];
+  unsigned char length;
+} message_t;
+
 void init_USART_125k(void) {
   // Baud rate
   // UBRR = f_osc/(16*baud) - 1
@@ -14,7 +19,6 @@ void init_USART_125k(void) {
   // Set frame format: 8data, 1stop bit, even parity
   UCSRC = (0<<USBS) | (3<<UCSZ0) | (1<<UPM1);
 }
-
 void init_USART_9600(void) {
   // Baud rate
   // UBRR = f_osc/(16*baud) - 1
@@ -29,10 +33,9 @@ void init_USART_RX(void) {
   // Enable receiver
   UCSRB = (1<<RXEN);
 }
-
 void init_USART_TX(void) {
-  // Enable transmitter
-  UCSRB = (1<<TXEN);
+  // Enable transmitter and tell it the buffer is empty.
+  UCSRB = (1<<TXEN) | (1<<TXC);
 }
 
 void init_PWM_CLK(void) {
@@ -46,14 +49,11 @@ void init_PWM_CLK(void) {
 
 void USART_TX( unsigned char byte ) {
   // Wait until transmit buffer is ready
-  // Send the byte
-  UDR = byte;
   while( !( UCSRA & ( 1 << UDRE ) ) )
     ; // Spin-lock
-  // 100us for data transmission and guard time to stay synchronous
-  _delay_us(110);
+  // Send the byte
+  UDR = byte;
 }
-
 unsigned char USART_RX( void ) {
   // Wait until receive buffer is ready
   while( !( UCSRA & ( 1 << RXC ) ) )
@@ -65,7 +65,6 @@ unsigned char USART_RX( void ) {
 void set_reset( void ) {
   PORTD = PORTD | (1 << PORTD3);
 }
-
 void clr_reset( void ) {
   PORTD = PORTD & (~(1 << PORTD3));
 }
@@ -73,7 +72,6 @@ void clr_reset( void ) {
 void set_vpp( void ) {
   PORTD = PORTD | (1 << PORTD4);
 }
-
 void clr_vpp( void ) {
   PORTD = PORTD & (~(1 << PORTD4));
 }
@@ -81,9 +79,59 @@ void clr_vpp( void ) {
 void set_status( void ) {
   PORTD = PORTD | (1 << PORTD6);
 }
-
 void clr_status( void ) {
   PORTD = PORTD & (~(1 << PORTD6));
+}
+
+message_t send_apdu(message_t apdu) {
+  // Go into TX mode
+  init_USART_TX();
+  // Send the APDU command bytes
+  unsigned int i;
+  for(i=0; i < apdu.length; i++) {
+    // Clear the TX Complete flag by writing a 1 to it
+    UCSRA = UCSRA | ( 1 << TXC );
+    USART_TX(apdu.data[i]);
+  }
+  // Wait until transmit buffer is finished
+  while( !( UCSRA & ( 1 << TXC ) ) )
+    ; // Spin-lock
+  // Get the response
+  init_USART_RX();
+  message_t response;
+  response.data[0] = USART_RX();
+  response.data[1] = USART_RX();
+  response.length = 2;
+  return response;
+}
+
+void print_byte(unsigned char byte, unsigned char tag) {
+  // Present a byte on PORTB, one half-byte at a time,
+  // with a tag to identify it using a logic analyzer
+  // The pair of bytes presented on PORTB uses the following structure:
+  // MSb                                             LSb
+  // .-------------------------------------------------.
+  // | Bit 7      | Bit 6       | Bit 5:4    | Bit 3:0 |
+  // | Data Valid | Lower/Upper | 0x03 & Tag | Data    |
+  // '-------------------------------------------------'
+  // If Bit 6 is 0, Data is the least-significant half-byte
+  // If Bit 6 is 1, Data is the most-significant half-byte
+  // After displaying each half-byte of data for 25us, a 0x00 byte will be
+  // displayed so that the Data Valid bit (Bit 7) can be used as a data clock.
+  unsigned char data_valid = 0x80;
+  unsigned char is_upper   = 0x40;
+                tag        = (0x30 & tag) << 4;
+  unsigned char byte_upper = 0x0F & (byte >> 4);
+                byte       = 0x0F & byte;
+  
+  PORTB = data_valid | is_upper | tag | byte_upper;
+  _delay_us(25);
+  PORTB = 0;
+  _delay_us(25);
+  PORTB = data_valid | tag | byte;
+  _delay_us(25);
+  PORTB = 0;
+  _delay_us(25);
 }
 
 int main(void) {
@@ -97,58 +145,44 @@ int main(void) {
   init_USART_RX();
 
   while(1) {
+    // Power-up procedure
     set_vpp();
     _delay_ms(10);
     set_reset();
     init_USART_RX();
     _delay_ms(80);
+    
     // Send Protocol Type Select
-    USART_TX(0xFF);
-    init_USART_TX();
-    USART_TX(0x00); // Don't set any parameters
-    USART_TX(0xFF); // XOR Checksum to nil the previous bytes
-    init_USART_RX();
+    message_t apdu;
+    apdu.data[0] = 0xFF;
+    apdu.data[1] = 0x00;
+    apdu.data[2] = 0xFF;
+    apdu.length = 3;
+    message_t response = send_apdu(apdu);
+    
     _delay_ms(100);
     //USART_TX(0x00);
     //USART_TX(0x88);
     //USART_TX(0x00);
     //USART_TX(0x81);
     //USART_TX(0x08);
+    
     // Send Check MF command
-    USART_TX(0x80);
-    init_USART_TX();
-    USART_TX(0x14);
-    USART_TX(0x01);
-    USART_TX(0x00);
-    USART_TX(0x00);
-    init_USART_RX();
+    apdu.data[0] = 0x80;
+    apdu.data[1] = 0x14;
+    apdu.data[2] = 0x01;
+    apdu.data[3] = 0x00;
+    apdu.data[4] = 0x00;
+    apdu.length = 5;
+    response = send_apdu(apdu);
+    
     set_status();
-    unsigned char c = USART_RX();
-    PORTB = (0xF0 & 0x10) | (0x0F & c);
-    _delay_us(100);
-    PORTB = (0xF0 & 0x20) | (0x0F & (c >> 4));
-    _delay_us(100);
-    PORTB = 0;
-    c = USART_RX();
-    PORTB = (0xF0 & 0x30) | (0x0F & c);
-    _delay_us(100);
-    PORTB = (0xF0 & 0x40) | (0x0F & (c >> 4));
-    _delay_us(100);
-    PORTB = 0;
+    print_byte(response.data[0], 0x01);
+    print_byte(response.data[1], 0x01);
     clr_status();
-    /*
-    if(USART_RX() == 0x90) {
-      set_status();
-      _delay_us(200);
-      clr_status();
-    }
-    if(USART_RX() == 0x01) {
-      set_status();
-      _delay_us(200);
-      clr_status();
-    }
-    */
+    
     _delay_ms(25);
+    // Shutdown procedure
     clr_reset();
     clr_vpp();
     _delay_ms(100);
