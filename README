@@ -1,0 +1,2 @@
+The purpose of this project is to develop a low-cost, highly-controllable Smart Card interface using an AVR microcontroller.
+This design makes use of an Atmel ATtiny 2313 microcontroller and some very simple interfacing boards to communicate with a Smart Card.
