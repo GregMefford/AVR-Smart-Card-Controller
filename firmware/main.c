@@ -114,7 +114,7 @@ void print_byte(unsigned char byte, unsigned char tag) {
   _delay_us(25);
 }
 
-message_t send_apdu(message_t apdu) {
+message_t send_apdu(message_t apdu, int trigger_after_data) {
   // Go into TX mode
   init_USART_TX();
   // Send the APDU command bytes
@@ -136,7 +136,6 @@ message_t send_apdu(message_t apdu) {
     response.length = 2;
     return response;
   }
-  unsigned char ack = c & 0xFE;
   if( (apdu.data[1] & 0xFE) == (c & 0xFE) ) {
     _delay_us(200);
     // Back into TX mode
@@ -148,9 +147,15 @@ message_t send_apdu(message_t apdu) {
     // Wait until transmit buffer is finished
     while( !( UCSRA & ( 1 << TXC ) ) )
       ; // Spin-lock
+    if( trigger_after_data ) {
+      set_status();
+    }
     // Assume we are going to get SW1 SW2 after this
     init_USART_RX();
     response.data[0] = USART_RX();
+    if( trigger_after_data ) {
+      clr_status();
+    }
     response.data[1] = USART_RX();
     response.length = 2;
     return response;
@@ -197,12 +202,12 @@ int main(void) {
     apdu.data[3] = 0x00;
     apdu.data[4] = 0x00;
     apdu.length = 5;
-    response = send_apdu(apdu);
+    response = send_apdu(apdu, 0);
     // Expected output: 0x9001
     print_byte(response.data[0], 0x01);
     print_byte(response.data[1], 0x01);
     
-    _delay_ms(100);
+    _delay_ms(10);
     
     // Select file 4000
     apdu.data[0] = 0x00;
@@ -213,21 +218,77 @@ int main(void) {
     apdu.data[5] = 0x40;
     apdu.data[6] = 0x00;
     apdu.length = 7;
-    response = send_apdu(apdu);
-    set_status();
+    response = send_apdu(apdu, 0);
     // Expected output: 0x611B
     print_byte(response.data[0], 0x02);
     print_byte(response.data[1], 0x02);
-    clr_status();
     
+    _delay_ms(10);
+    
+    // Select file 4002
+    apdu.data[0] = 0x00;
+    apdu.data[1] = 0xA4;
+    apdu.data[2] = 0x00;
+    apdu.data[3] = 0x00;
+    apdu.data[4] = 0x02;
+    apdu.data[5] = 0x40;
+    apdu.data[6] = 0x02;
+    apdu.length = 7;
+    response = send_apdu(apdu, 0);
+    // Expected output: 0x6119
+    print_byte(response.data[0], 0x02);
+    print_byte(response.data[1], 0x02);
+    
+    _delay_ms(10);
+    
+    // Internal Auth (Single DES Key)
+    // Data: 0x1122334455667788
+    apdu.data[0]  = 0x00;
+    apdu.data[1]  = 0x88;
+    apdu.data[2]  = 0x00;
+    apdu.data[3]  = 0x81;
+    apdu.data[4]  = 0x08;
+    apdu.data[5]  = 0x11;
+    apdu.data[6]  = 0x22;
+    apdu.data[7]  = 0x33;
+    apdu.data[8]  = 0x44;
+    apdu.data[9]  = 0x55;
+    apdu.data[10] = 0x66;
+    apdu.data[11] = 0x77;
+    apdu.data[12] = 0x88;
+    apdu.length = 13;
+    response = send_apdu(apdu, 1);
+    //set_status();
+    // Expected output: 0x6108
+    print_byte(response.data[0], 0x02);
+    print_byte(response.data[1], 0x02);
+    //clr_status();
+    
+    /*
     _delay_ms(100);
-    
-    //USART_TX(0x00);
-    //USART_TX(0x88);
-    //USART_TX(0x00);
-    //USART_TX(0x81);
-    //USART_TX(0x08);
-    
+    // Internal Auth (Triple DES Key)
+    // Data: 0x1122334455667788
+    apdu.data[0]  = 0x00;
+    apdu.data[1]  = 0x88;
+    apdu.data[2]  = 0x00;
+    apdu.data[3]  = 0x82;
+    apdu.data[4]  = 0x08;
+    apdu.data[5]  = 0x11;
+    apdu.data[6]  = 0x22;
+    apdu.data[7]  = 0x33;
+    apdu.data[8]  = 0x44;
+    apdu.data[9]  = 0x55;
+    apdu.data[10] = 0x66;
+    apdu.data[11] = 0x77;
+    apdu.data[12] = 0x88;
+    apdu.length = 13;
+    response = send_apdu(apdu);
+    set_status();
+    // Expected output: 0x6108
+    print_byte(response.data[0], 0x02);
+    print_byte(response.data[1], 0x02);
+    clr_status();
+    */
     _delay_ms(25);
     
     // Shutdown procedure
