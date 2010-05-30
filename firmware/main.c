@@ -48,6 +48,8 @@ void init_PWM_CLK(void) {
 }
 
 void USART_TX( unsigned char byte ) {
+  // Clear the TX Complete flag by writing a 1 to it
+  UCSRA = UCSRA | ( 1 << TXC );
   // Wait until transmit buffer is ready
   while( !( UCSRA & ( 1 << UDRE ) ) )
     ; // Spin-lock
@@ -83,28 +85,6 @@ void clr_status( void ) {
   PORTD = PORTD & (~(1 << PORTD6));
 }
 
-message_t send_apdu(message_t apdu) {
-  // Go into TX mode
-  init_USART_TX();
-  // Send the APDU command bytes
-  unsigned int i;
-  for(i=0; i < apdu.length; i++) {
-    // Clear the TX Complete flag by writing a 1 to it
-    UCSRA = UCSRA | ( 1 << TXC );
-    USART_TX(apdu.data[i]);
-  }
-  // Wait until transmit buffer is finished
-  while( !( UCSRA & ( 1 << TXC ) ) )
-    ; // Spin-lock
-  // Get the response
-  init_USART_RX();
-  message_t response;
-  response.data[0] = USART_RX();
-  response.data[1] = USART_RX();
-  response.length = 2;
-  return response;
-}
-
 void print_byte(unsigned char byte, unsigned char tag) {
   // Present a byte on PORTB, one half-byte at a time,
   // with a tag to identify it using a logic analyzer
@@ -134,6 +114,50 @@ void print_byte(unsigned char byte, unsigned char tag) {
   _delay_us(25);
 }
 
+message_t send_apdu(message_t apdu) {
+  // Go into TX mode
+  init_USART_TX();
+  // Send the APDU command bytes
+  unsigned int i;
+  for(i=0; i < 5; i++) {
+    USART_TX(apdu.data[i]);
+  }
+  // Wait until transmit buffer is finished
+  while( !( UCSRA & ( 1 << TXC ) ) )
+    ; // Spin-lock
+  // Get the response
+  init_USART_RX();
+  message_t response;
+  unsigned char c = USART_RX();
+  if( (c & 0xF0) == 0x60 || (c & 0xF0) == 0x90 ) {
+    // This is a SW1. Looks for a SW2
+    response.data[0] = c;
+    response.data[1] = USART_RX();
+    response.length = 2;
+    return response;
+  }
+  unsigned char ack = c & 0xFE;
+  if( (apdu.data[1] & 0xFE) == (c & 0xFE) ) {
+    _delay_us(200);
+    // Back into TX mode
+    init_USART_TX();
+    // Send the data
+    for(; i < apdu.length; i++) {
+      USART_TX(apdu.data[i]);
+    }
+    // Wait until transmit buffer is finished
+    while( !( UCSRA & ( 1 << TXC ) ) )
+      ; // Spin-lock
+    // Assume we are going to get SW1 SW2 after this
+    init_USART_RX();
+    response.data[0] = USART_RX();
+    response.data[1] = USART_RX();
+    response.length = 2;
+    return response;
+  }
+  return response;
+}
+
 int main(void) {
   DDRD = (1<<DDD6) | // Status output
          (1<<DDD5) | // OC0B output pin
@@ -143,7 +167,9 @@ int main(void) {
   init_PWM_CLK();
   init_USART_9600();
   init_USART_RX();
-
+  
+  message_t apdu;
+  message_t response;
   while(1) {
     // Power-up procedure
     set_vpp();
@@ -153,19 +179,16 @@ int main(void) {
     _delay_ms(80);
     
     // Send Protocol Type Select
-    message_t apdu;
-    apdu.data[0] = 0xFF;
-    apdu.data[1] = 0x00;
-    apdu.data[2] = 0xFF;
-    apdu.length = 3;
-    message_t response = send_apdu(apdu);
+    init_USART_TX();
+    USART_TX(0xFF);
+    USART_TX(0x00);
+    USART_TX(0xFF);
+    // Wait until transmit buffer is finished
+    while( !( UCSRA & ( 1 << TXC ) ) )
+      ; // Spin-lock
+    init_USART_RX();
     
-    _delay_ms(100);
-    //USART_TX(0x00);
-    //USART_TX(0x88);
-    //USART_TX(0x00);
-    //USART_TX(0x81);
-    //USART_TX(0x08);
+    _delay_ms(10);
     
     // Send Check MF command
     apdu.data[0] = 0x80;
@@ -175,13 +198,38 @@ int main(void) {
     apdu.data[4] = 0x00;
     apdu.length = 5;
     response = send_apdu(apdu);
-    
-    set_status();
+    // Expected output: 0x9001
     print_byte(response.data[0], 0x01);
     print_byte(response.data[1], 0x01);
+    
+    _delay_ms(100);
+    
+    // Select file 4000
+    apdu.data[0] = 0x00;
+    apdu.data[1] = 0xA4;
+    apdu.data[2] = 0x00;
+    apdu.data[3] = 0x00;
+    apdu.data[4] = 0x02;
+    apdu.data[5] = 0x40;
+    apdu.data[6] = 0x00;
+    apdu.length = 7;
+    response = send_apdu(apdu);
+    set_status();
+    // Expected output: 0x611B
+    print_byte(response.data[0], 0x02);
+    print_byte(response.data[1], 0x02);
     clr_status();
     
+    _delay_ms(100);
+    
+    //USART_TX(0x00);
+    //USART_TX(0x88);
+    //USART_TX(0x00);
+    //USART_TX(0x81);
+    //USART_TX(0x08);
+    
     _delay_ms(25);
+    
     // Shutdown procedure
     clr_reset();
     clr_vpp();
